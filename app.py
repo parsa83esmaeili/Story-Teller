@@ -1,16 +1,17 @@
+#!/usr/bin/env python3
 # app.py - Streamlit Web App for AI Story & Image Generation
 import os
+import tempfile
+import textwrap
 import streamlit as st
 from openai import OpenAI
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 from datetime import datetime
 import requests
-import base64
 
 # ------------------------- SETUP & SECRETS -------------------------
 # Initialize API clients using Streamlit's secrets management
-# IMPORTANT: You will set these keys in the Cloud deployment
 try:
     story_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     image_client = OpenAI(
@@ -21,45 +22,118 @@ except Exception as e:
     st.error(f"Error loading API keys: {e}. Please check your secrets configuration.")
     st.stop()
 
-# ------------------------- STORY & IMAGE FUNCTIONS -------------------------
-# (KEEP YOUR EXISTING 'generate_story', 'generate_and_save_image',
-#  and 'format_story' FUNCTIONS HERE EXACTLY AS THEY ARE)
-# ... [Paste your functions here without the command-line prints] ...
+# ------------------------- CORE FUNCTIONS -------------------------
+# 1. Story Generation Function
+def generate_story(prompt: str) -> str:
+    """Generates a three-paragraph story using OpenAI."""
+    if not story_client:
+        return "Error: Story client not configured."
 
-# ------------------------- MODIFIED PDF FUNCTION FOR WEB -------------------------
+    try:
+        system_instruction = (
+            "You are a creative fiction writer. "
+            "Generate a short story based on the user's prompt. "
+            "The story must be exactly three paragraphs long. "
+            "Ensure the narrative is cohesive and has clear flow."
+        )
+        response = story_client.responses.create(
+            model="gpt-4o-mini",
+            instructions=system_instruction,
+            input=prompt,
+            temperature=0.8,
+        )
+        return response.output_text
+    except Exception as e:
+        return f"Error generating story: {e}"
+
+# 2. Image Generation Function
+def generate_and_save_image(prompt: str):
+    """Generates an image using GapGPT's API and returns image bytes."""
+    if not image_client:
+        return "Error: Image client not configured."
+
+    try:
+        response = image_client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            n=1,
+            size="1024x1024",
+            quality="standard",
+            style="vivid"
+        )
+        image_url = response.data[0].url
+        img_response = requests.get(image_url, timeout=30)
+        img_response.raise_for_status()
+        return img_response.content  # Return image bytes directly
+    except Exception as e:
+        return f"Error generating image: {e}"
+
+# 3. Story Formatting Function
+def format_story(story_text: str):
+    """Formats the story and extracts paragraphs."""
+    story_text = story_text.replace('\n \n', '\n\n').replace('\n\n\n', '\n\n')
+    paragraphs = [p.strip() for p in story_text.split('\n\n') if p.strip()]
+    
+    if not paragraphs:
+        return "Error: Could not parse story.", None, None
+    
+    # Console formatting (for display in the app)
+    width = 70
+    border = "=" * width
+    formatted_lines = [
+        f"\n{border}",
+        "YOUR GENERATED STORY".center(width),
+        f"{border}\n"
+    ]
+    for i, paragraph in enumerate(paragraphs, 1):
+        wrapped_para = textwrap.fill(paragraph, width=width)
+        formatted_lines.append(f"Paragraph {i}:")
+        formatted_lines.append(wrapped_para)
+        formatted_lines.append("")
+    formatted_lines.append(border)
+    
+    return "\n".join(formatted_lines), paragraphs, paragraphs[0]
+
+# 4. PDF Creation Function (Modified for Web/Streamlit)
 def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
-    """
-    Creates a PDF in memory and returns the bytes.
-    'image_bytes' should be the raw bytes of the generated PNG image.
-    """
+    """Creates a PDF in memory and returns the bytes."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
-
+    
     # Add your Geom font (ensure the .ttf file is in the same directory)
-    pdf.add_font("Geom", "", "Geom-VariableFont_wght.ttf")
-    pdf.set_font("Geom", "", 12)
-
+    try:
+        pdf.add_font("Geom", "", "Geom-VariableFont_wght.ttf")
+    except:
+        # Fallback to a standard font if Geom is not available
+        st.warning("Geom font not found. Using Helvetica as fallback.")
+        pdf.set_font("Helvetica", "", 12)
+    else:
+        pdf.set_font("Geom", "", 12)
+    
     # 1. TITLE PAGE
     pdf.add_page()
-    pdf.set_font("Geom", '', 32)
+    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 32)
     pdf.cell(0, 50, "AI Generated Story", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(20)
-    pdf.set_font("Geom", '', 24)
+    
+    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 24)
     truncated_prompt = (user_prompt[:47] + "...") if len(user_prompt) > 50 else user_prompt
     pdf.multi_cell(0, 15, truncated_prompt, align='C')
     pdf.ln(30)
-    pdf.set_font("Geom", '', 14)
-    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%B %d, %Y')}",
+    
+    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 14)
+    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%B %d, %Y')}", 
              new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-    pdf.cell(0, 10, "Created with OpenAI GPT & GapGPT DALL-E 3",
+    pdf.cell(0, 10, "Created with OpenAI GPT & GapGPT DALL-E 3", 
              new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
 
     # 2. STORY PAGE(S)
     pdf.add_page()
-    pdf.set_font("Geom", '', 22)
+    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 22)
     pdf.cell(0, 15, "The Story", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("Geom", '', 12)
+    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 12)
     pdf.ln(10)
+    
     for i, paragraph in enumerate(story_paragraphs):
         pdf.multi_cell(0, 8, paragraph)
         if i < len(story_paragraphs) - 1:
@@ -68,14 +142,14 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
     # 3. IMAGE PAGE (if image was generated)
     if image_bytes:
         pdf.add_page()
-        pdf.set_font("Geom", '', 22)
+        pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 22)
         pdf.cell(0, 15, "Story Illustration", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Geom", '', 12)
-        pdf.cell(0, 10, "Generated from the first paragraph",
+        pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 12)
+        pdf.cell(0, 10, "Generated from the first paragraph", 
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(5)
+        
         # Save image bytes to a temporary file for FPDF
-        import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             tmp.write(image_bytes)
             tmp_path = tmp.name
@@ -118,7 +192,7 @@ if generate_button and user_prompt:
         st.stop()
 
     st.subheader("Your Generated Story")
-    st.markdown(formatted_story)
+    st.text(formatted_story)  # Changed from st.markdown for better formatting
 
     with st.spinner("🎨 Creating an image from the first paragraph..."):
         # Generate image and keep it in memory
@@ -127,9 +201,8 @@ if generate_button and user_prompt:
             st.warning(f"Image generation failed: {image_result}. Continuing without image.")
             image_bytes = None
         else:
-            # 'image_result' should be the file path; read the image bytes
-            with open(image_result, 'rb') as f:
-                image_bytes = f.read()
+            # 'image_result' contains the image bytes
+            image_bytes = image_result
             # Display the image in the app
             st.subheader("Story Illustration")
             st.image(image_bytes, use_container_width=True)
@@ -139,11 +212,20 @@ if generate_button and user_prompt:
 
     # Success Message and Download Button
     st.success("✅ All done! Download your storybook below.")
+    
+    # Generate a nice filename with timestamp
+    filename = f"AI_Story_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    
+    # Provide download button
     st.download_button(
         label="📥 Download Story as PDF",
         data=pdf_bytes,
-        file_name=f"AI_Story_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+        file_name=filename,
         mime="application/pdf",
     )
 elif generate_button:
     st.info("Please enter a story prompt to begin.")
+
+# Footer
+st.markdown("---")
+st.caption("Built with OpenAI GPT, GapGPT DALL-E 3, and Streamlit")
