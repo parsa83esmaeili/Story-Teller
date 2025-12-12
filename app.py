@@ -3,6 +3,7 @@
 import os
 import tempfile
 import textwrap
+import time
 import streamlit as st
 from openai import OpenAI
 from fpdf import FPDF
@@ -57,21 +58,35 @@ def generate_and_save_image(prompt: str):
     if not image_client:
         return "Error: Image client not configured."
 
-    try:
-        response = image_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            n=1,
-            size="1024x1024",
-            quality="standard",
-            style="vivid"
-        )
-        image_url = response.data[0].url
-        img_response = requests.get(image_url, timeout=30)
-        img_response.raise_for_status()
-        return img_response.content  # Return image bytes directly
-    except Exception as e:
-        return f"Error generating image: {e}"
+    # Try twice with increased timeout
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = image_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                n=1,
+                size="1024x1024",
+                quality="standard",
+                style="vivid"
+            )
+            image_url = response.data[0].url
+            
+            # Increased timeout to 45 seconds
+            img_response = requests.get(image_url, timeout=45)
+            img_response.raise_for_status()
+            return img_response.content
+            
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait 2 seconds before retry
+                continue  # Try again
+            else:
+                return "Error generating image: Request timed out after multiple attempts."
+        except Exception as e:
+            return f"Error generating image: {e}"
+    
+    return "Error generating image: Max retries exceeded."
 
 def format_story(story_text: str):
     """Formats the story and extracts paragraphs."""
@@ -146,8 +161,8 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
         if i < len(story_paragraphs) - 1:
             pdf.ln(8)
 
-    # 3. IMAGE PAGE (if image was generated)
-    if image_bytes:
+    # 3. IMAGE PAGE (only if image was successfully generated)
+    if image_bytes and isinstance(image_bytes, bytes) and len(image_bytes) > 100:
         pdf.add_page()
         pdf.set_font(font_name, '', 22)
         pdf.cell(0, 15, "Story Illustration", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -166,12 +181,11 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
             os.unlink(tmp_path)  # Clean up temp file
 
     # Return PDF as bytes - FIXED VERSION
-    # Uses modern fpdf2 method with fallback for older versions
     try:
         # For fpdf2 >= 2.2.0 (the version installed in the cloud)
         return pdf.to_bytes()
     except AttributeError:
-        # Fallback for older versions (unlikely in the cloud)
+        # Fallback for older versions
         pdf_output = pdf.output(dest="S")
         if isinstance(pdf_output, str):
             return pdf_output.encode("latin-1")
@@ -211,12 +225,13 @@ if generate_button and user_prompt:
     st.subheader("Your Generated Story")
     st.text(formatted_story)
 
+    image_bytes = None
     with st.spinner("🎨 Creating an image from the first paragraph..."):
         # Generate image and keep it in memory
         image_result = generate_and_save_image(first_paragraph)
         if isinstance(image_result, str) and image_result.startswith("Error"):
-            st.warning(f"Image generation failed: {image_result}. Continuing without image.")
-            image_bytes = None
+            st.warning(f"Image generation failed: {image_result}")
+            # Continue without image - image_bytes remains None
         else:
             # 'image_result' contains the image bytes
             image_bytes = image_result
@@ -224,22 +239,28 @@ if generate_button and user_prompt:
             st.subheader("Story Illustration")
             st.image(image_bytes, use_container_width=True)
 
+    # Create PDF with proper error handling
     with st.spinner("📄 Compiling your PDF..."):
-        pdf_bytes = create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt)
-
-    # Success Message and Download Button
-    st.success("✅ All done! Download your storybook below.")
-    
-    # Generate a nice filename with timestamp
-    filename = f"AI_Story_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-    
-    # Provide download button
-    st.download_button(
-        label="📥 Download Story as PDF",
-        data=pdf_bytes,
-        file_name=filename,
-        mime="application/pdf",
-    )
+        try:
+            pdf_bytes = create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt)
+            
+            # Success Message and Download Button
+            st.success("✅ All done! Download your storybook below.")
+            
+            # Generate a nice filename with timestamp
+            filename = f"AI_Story_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+            
+            # Provide download button
+            st.download_button(
+                label="📥 Download Story as PDF",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+            )
+        except Exception as e:
+            st.error(f"Failed to create PDF: {str(e)[:100]}...")
+            st.info("Your story was generated above. You can copy it from the screen.")
+            
 elif generate_button:
     st.info("Please enter a story prompt to begin.")
 
