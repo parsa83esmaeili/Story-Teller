@@ -12,18 +12,23 @@ import requests
 
 # ------------------------- SETUP & SECRETS -------------------------
 # Initialize API clients using Streamlit's secrets management
-try:
-    story_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    image_client = OpenAI(
-        api_key=st.secrets["GAPGPT_API_KEY"],
-        base_url="https://api.gapgpt.app/v1"
-    )
-except Exception as e:
-    st.error(f"Error loading API keys: {e}. Please check your secrets configuration.")
-    st.stop()
+@st.cache_resource
+def setup_clients():
+    try:
+        story_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        image_client = OpenAI(
+            api_key=st.secrets["GAPGPT_API_KEY"],
+            base_url="https://api.gapgpt.app/v1"
+        )
+        return story_client, image_client
+    except Exception as e:
+        st.error(f"Error loading API keys: {e}. Please check your secrets configuration.")
+        st.stop()
+
+story_client, image_client = setup_clients()
 
 # ------------------------- CORE FUNCTIONS -------------------------
-# 1. Story Generation Function
+@st.cache_data(ttl=3600)
 def generate_story(prompt: str) -> str:
     """Generates a three-paragraph story using OpenAI."""
     if not story_client:
@@ -46,7 +51,7 @@ def generate_story(prompt: str) -> str:
     except Exception as e:
         return f"Error generating story: {e}"
 
-# 2. Image Generation Function
+@st.cache_data(ttl=3600)
 def generate_and_save_image(prompt: str):
     """Generates an image using GapGPT's API and returns image bytes."""
     if not image_client:
@@ -68,7 +73,6 @@ def generate_and_save_image(prompt: str):
     except Exception as e:
         return f"Error generating image: {e}"
 
-# 3. Story Formatting Function
 def format_story(story_text: str):
     """Formats the story and extracts paragraphs."""
     story_text = story_text.replace('\n \n', '\n\n').replace('\n\n\n', '\n\n')
@@ -94,34 +98,37 @@ def format_story(story_text: str):
     
     return "\n".join(formatted_lines), paragraphs, paragraphs[0]
 
-# 4. PDF Creation Function (Modified for Web/Streamlit)
 def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
     """Creates a PDF in memory and returns the bytes."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # Add your Geom font (ensure the .ttf file is in the same directory)
-    try:
-        pdf.add_font("Geom", "", "Geom-VariableFont_wght.ttf")
-    except:
-        # Fallback to a standard font if Geom is not available
-        st.warning("Geom font not found. Using Helvetica as fallback.")
-        pdf.set_font("Helvetica", "", 12)
+    geom_font_available = os.path.exists("Geom-VariableFont_wght.ttf")
+    
+    if geom_font_available:
+        try:
+            pdf.add_font("Geom", "", "Geom-VariableFont_wght.ttf")
+            pdf.set_font("Geom", "", 12)
+        except:
+            geom_font_available = False
+            pdf.set_font("Helvetica", "", 12)
     else:
-        pdf.set_font("Geom", "", 12)
+        pdf.set_font("Helvetica", "", 12)
     
     # 1. TITLE PAGE
     pdf.add_page()
-    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 32)
+    font_name = "Geom" if geom_font_available else "Helvetica"
+    pdf.set_font(font_name, '', 32)
     pdf.cell(0, 50, "AI Generated Story", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(20)
     
-    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 24)
+    pdf.set_font(font_name, '', 24)
     truncated_prompt = (user_prompt[:47] + "...") if len(user_prompt) > 50 else user_prompt
     pdf.multi_cell(0, 15, truncated_prompt, align='C')
     pdf.ln(30)
     
-    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 14)
+    pdf.set_font(font_name, '', 14)
     pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%B %d, %Y')}", 
              new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.cell(0, 10, "Created with OpenAI GPT & GapGPT DALL-E 3", 
@@ -129,9 +136,9 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
 
     # 2. STORY PAGE(S)
     pdf.add_page()
-    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 22)
+    pdf.set_font(font_name, '', 22)
     pdf.cell(0, 15, "The Story", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 12)
+    pdf.set_font(font_name, '', 12)
     pdf.ln(10)
     
     for i, paragraph in enumerate(story_paragraphs):
@@ -142,9 +149,9 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
     # 3. IMAGE PAGE (if image was generated)
     if image_bytes:
         pdf.add_page()
-        pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 22)
+        pdf.set_font(font_name, '', 22)
         pdf.cell(0, 15, "Story Illustration", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.set_font("Geom" if os.path.exists("Geom-VariableFont_wght.ttf") else "Helvetica", '', 12)
+        pdf.set_font(font_name, '', 12)
         pdf.cell(0, 10, "Generated from the first paragraph", 
                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(5)
@@ -158,8 +165,14 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
         finally:
             os.unlink(tmp_path)  # Clean up temp file
 
-    # Return PDF as bytes
-    return pdf.output(dest="S").encode("latin-1")
+    # Return PDF as bytes (handles both fpdf and fpdf2 library versions)
+    # FIX FOR AttributeError: This handles both string and bytes output
+    pdf_output = pdf.output(dest="S")
+    if isinstance(pdf_output, str):
+        return pdf_output.encode("latin-1")
+    else:
+        # It's already bytes
+        return pdf_output
 
 # ------------------------- STREAMLIT APP UI -------------------------
 st.set_page_config(page_title="AI Story Generator", layout="centered")
@@ -192,7 +205,7 @@ if generate_button and user_prompt:
         st.stop()
 
     st.subheader("Your Generated Story")
-    st.text(formatted_story)  # Changed from st.markdown for better formatting
+    st.text(formatted_story)
 
     with st.spinner("🎨 Creating an image from the first paragraph..."):
         # Generate image and keep it in memory
