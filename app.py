@@ -165,14 +165,18 @@ def create_story_pdf_bytes(story_paragraphs, image_bytes, user_prompt):
         finally:
             os.unlink(tmp_path)  # Clean up temp file
 
-    # Return PDF as bytes (handles both fpdf and fpdf2 library versions)
-    # FIX FOR AttributeError: This handles both string and bytes output
-    pdf_output = pdf.output(dest="S")
-    if isinstance(pdf_output, str):
-        return pdf_output.encode("latin-1")
-    else:
-        # It's already bytes
-        return pdf_output
+    # Return PDF as bytes - FIXED VERSION
+    # Uses modern fpdf2 method with fallback for older versions
+    try:
+        # For fpdf2 >= 2.2.0 (the version installed in the cloud)
+        return pdf.to_bytes()
+    except AttributeError:
+        # Fallback for older versions (unlikely in the cloud)
+        pdf_output = pdf.output(dest="S")
+        if isinstance(pdf_output, str):
+            return pdf_output.encode("latin-1")
+        else:
+            return pdf_output
 
 # ------------------------- STREAMLIT APP UI -------------------------
 st.set_page_config(page_title="AI Story Generator", layout="centered")
